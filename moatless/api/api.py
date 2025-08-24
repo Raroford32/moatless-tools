@@ -35,6 +35,7 @@ from moatless.api.runner.api import router as runner_router
 from moatless.api.settings.api import router as settings_router
 from moatless.api.swebench.api import router as swebench_router
 from moatless.api.trajectories.api import router as trajectory_router
+from moatless.api.enhanced_api import router as enhanced_router
 
 from moatless.telemetry import setup_telemetry
 from moatless.utils.warnings import filter_external_warnings
@@ -280,6 +281,7 @@ def create_api(workspace: Workspace | None = None) -> FastAPI:
     router.include_router(swebench_router, prefix="/swebench", tags=["swebench"])
     router.include_router(trajectory_router, prefix="/trajectories", tags=["trajectories"])
     router.include_router(loop_router, prefix="/loop", tags=["loop"])
+    router.include_router(enhanced_router, prefix="/enhanced", tags=["enhanced"])
 
     api.mount("/api", router)
 

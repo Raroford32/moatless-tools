@@ -1,11 +1,14 @@
 """WebSocket module for Moatless API."""
 
+import asyncio
 import json
 import logging
-from typing import Dict, Set
+import time
+from typing import Dict, Set, Optional
+from datetime import datetime, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
-from moatless.events import BaseEvent
+from moatless.events import BaseEvent, ProgressEvent, ConversationEvent, ProjectEvent
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +21,57 @@ class ConnectionManager:
         self.trajectory_subscriptions: Dict[str, Set[WebSocket]] = {}
         # Maps each socket to its subscriptions for cleanup
         self.socket_subscriptions: Dict[WebSocket, Dict[str, Set[str]]] = {}
+        # Connection metadata for enhanced real-time features
+        self.connection_metadata: Dict[WebSocket, dict] = {}
+        # Active operations tracking
+        self.active_operations: Dict[str, dict] = {}
+        # Heartbeat tracking
+        self.last_heartbeat: Dict[WebSocket, float] = {}
+        # Start heartbeat task
+        self._heartbeat_task = None
+        self._heartbeat_started = False
+
+    def _start_heartbeat_monitor(self):
+        """Start the heartbeat monitoring task"""
+        if self._heartbeat_task is None and not self._heartbeat_started:
+            try:
+                self._heartbeat_task = asyncio.create_task(self._heartbeat_monitor())
+                self._heartbeat_started = True
+            except RuntimeError:
+                # No event loop running, will start when needed
+                pass
+
+    async def _heartbeat_monitor(self):
+        """Monitor connections and send heartbeat pings"""
+        while True:
+            try:
+                await asyncio.sleep(30)  # Send heartbeat every 30 seconds
+                current_time = time.time()
+                disconnected_sockets = []
+                
+                for websocket in self.active_connections.copy():
+                    try:
+                        # Check if socket is still alive
+                        if websocket.client_state.value == 3:  # DISCONNECTED
+                            disconnected_sockets.append(websocket)
+                            continue
+                            
+                        # Send heartbeat
+                        await websocket.send_json({
+                            "type": "heartbeat",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        })
+                        self.last_heartbeat[websocket] = current_time
+                    except Exception as e:
+                        logger.warning(f"Heartbeat failed for connection: {e}")
+                        disconnected_sockets.append(websocket)
+                
+                # Clean up disconnected sockets
+                for websocket in disconnected_sockets:
+                    await self.disconnect(websocket)
+                    
+            except Exception as e:
+                logger.error(f"Error in heartbeat monitor: {e}")
 
     async def connect(self, websocket: WebSocket):
         """Accept a new WebSocket connection."""
@@ -26,6 +80,17 @@ class ConnectionManager:
             await websocket.accept()
             self.active_connections.add(websocket)
             self.socket_subscriptions[websocket] = {"projects": set(), "trajectories": set()}
+            self.connection_metadata[websocket] = {
+                "connected_at": datetime.now(timezone.utc),
+                "user_agent": websocket.headers.get("user-agent", "unknown"),
+                "ip": websocket.client.host if websocket.client else "unknown"
+            }
+            self.last_heartbeat[websocket] = time.time()
+            
+            # Start heartbeat monitor if not already started
+            if not self._heartbeat_started:
+                self._start_heartbeat_monitor()
+                
             logger.debug(f"WebSocket connected. Total connections: {len(self.active_connections)}")
         except Exception as e:
             logger.error(f"Failed to accept WebSocket connection: {e}")
@@ -52,11 +117,75 @@ class ConnectionManager:
 
                 del self.socket_subscriptions[websocket]
 
+            # Clean up metadata
+            self.connection_metadata.pop(websocket, None)
+            self.last_heartbeat.pop(websocket, None)
+
             if not websocket.client_state.DISCONNECTED:
                 await websocket.close()
             logger.debug(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
         except Exception as e:
             logger.error(f"Error during WebSocket disconnect: {e}")
+
+    async def track_operation(self, operation_id: str, operation_type: str, metadata: dict = None):
+        """Track a long-running operation for progress updates"""
+        self.active_operations[operation_id] = {
+            "type": operation_type,
+            "started_at": datetime.now(timezone.utc),
+            "metadata": metadata or {},
+            "progress": 0,
+            "status": "started"
+        }
+        
+        # Broadcast operation start
+        await self.broadcast_message({
+            "type": "operation_started",
+            "operation_id": operation_id,
+            "operation_type": operation_type,
+            "metadata": metadata or {}
+        })
+
+    async def update_operation_progress(self, operation_id: str, progress: float, current_step: str, total_steps: int):
+        """Update progress for a tracked operation"""
+        if operation_id in self.active_operations:
+            self.active_operations[operation_id].update({
+                "progress": progress,
+                "current_step": current_step,
+                "total_steps": total_steps,
+                "updated_at": datetime.now(timezone.utc)
+            })
+            
+            # Create and broadcast progress event
+            progress_event = ProgressEvent(
+                operation_id=operation_id,
+                progress_percentage=progress,
+                current_step=current_step,
+                total_steps=total_steps
+            )
+            await self.broadcast_event(progress_event)
+
+    async def complete_operation(self, operation_id: str, result: dict = None):
+        """Mark an operation as completed"""
+        if operation_id in self.active_operations:
+            self.active_operations[operation_id].update({
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc),
+                "result": result or {}
+            })
+            
+            await self.broadcast_message({
+                "type": "operation_completed",
+                "operation_id": operation_id,
+                "result": result or {}
+            })
+            
+            # Clean up completed operation after a delay
+            asyncio.create_task(self._cleanup_operation(operation_id, delay=300))  # 5 minutes
+
+    async def _cleanup_operation(self, operation_id: str, delay: int = 300):
+        """Clean up operation data after a delay"""
+        await asyncio.sleep(delay)
+        self.active_operations.pop(operation_id, None)
 
     async def subscribe_to_project(self, websocket: WebSocket, project_id: str):
         """Subscribe a connection to a specific project."""

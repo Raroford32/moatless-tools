@@ -48,5 +48,59 @@ class FlowCompletedEvent(FlowEvent):
     event_type: str = "completed"
 
 
+class ProgressEvent(BaseEvent):
+    """Progress tracking event for long-running operations"""
+    
+    scope: str = "progress"
+    event_type: str = "progress"
+    operation_id: str
+    progress_percentage: float = Field(ge=0, le=100)
+    current_step: str
+    total_steps: int
+    estimated_remaining_time: Optional[float] = None
+
+
+class CodeAnalysisEvent(BaseEvent):
+    """Code analysis progress event"""
+    
+    scope: str = "code_analysis"
+    event_type: str = "analysis"
+    file_path: str
+    analysis_type: str  # "syntax", "semantic", "quality", "security"
+    status: str  # "started", "completed", "error"
+    results: Optional[dict] = None
+
+
+class ConversationEvent(BaseEvent):
+    """Conversation and dialogue events"""
+    
+    scope: str = "conversation"
+    event_type: str = "message"
+    conversation_id: str
+    message_type: str  # "user", "assistant", "system"
+    content: str
+    metadata: Optional[dict] = None
+
+
+class ProjectEvent(BaseEvent):
+    """Project-level events"""
+    
+    scope: str = "project"
+    event_type: str = "status_update"
+    status: str  # "active", "paused", "completed", "error"
+    details: Optional[dict] = None
+
+
+class SecurityScanEvent(BaseEvent):
+    """Security scanning events"""
+    
+    scope: str = "security"
+    event_type: str = "scan"
+    scan_type: str  # "vulnerability", "dependency", "secrets"
+    file_path: Optional[str] = None
+    severity: str  # "low", "medium", "high", "critical"
+    finding: dict
+
+
 class FlowErrorEvent(FlowEvent):
     event_type: str = "error"
