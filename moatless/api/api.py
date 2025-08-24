@@ -281,7 +281,7 @@ def create_api(workspace: Workspace | None = None) -> FastAPI:
     router.include_router(swebench_router, prefix="/swebench", tags=["swebench"])
     router.include_router(trajectory_router, prefix="/trajectories", tags=["trajectories"])
     router.include_router(loop_router, prefix="/loop", tags=["loop"])
-    router.include_router(enhanced_router, prefix="/enhanced", tags=["enhanced"])
+    router.include_router(enhanced_router, tags=["enhanced"])
 
     api.mount("/api", router)
 
